@@ -1,14 +1,14 @@
 # router.py
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.output_parsers import StrOutputParser
 from llm_tools import get_llm_provider, contains_crisis_keywords
 
 # Create a high-reasoning LLM instance specifically for routing, using Gemini.
-llm_router = get_llm_provider(provider="gemini", model_name="gemini-2.5-flash", temperature=0.0)
+llm_router = get_llm_provider(provider="gemini", model_name="gemini-1.5-flash", temperature=0.0)
 
 _ALLOWED = {"mood", "therapy", "routine", "crisis"}
 
-# --- FINAL, CONTEXT-AWARE ROUTER PROMPT ---
+# --- FINAL, CONTEXT-AWARE ROUTER PROMPT (Unchanged) ---
 router_prompt = PromptTemplate.from_template(
     "You are an expert conversational analyst. Your task is to read the following conversation transcript and decide which specialist agent should handle the VERY NEXT TURN. "
     "Choose exactly one label from [mood, therapy, routine, crisis].\n\n"
@@ -30,18 +30,25 @@ router_prompt = PromptTemplate.from_template(
     "**Your one-word decision:**"
 )
 
+# --- THIS IS THE FIX ---
+# We now use the modern LangChain Expression Language (LCEL) syntax.
+# The `|` symbol "pipes" the output of one component into the next.
+# StrOutputParser() ensures the final output is a clean string.
+_chain = router_prompt | llm_router | StrOutputParser()
+# --- END OF FIX ---
+
 def _normalize_label(text: str) -> str:
     out = (text or "").strip().lower().replace(".", "")
     return out if out in _ALLOWED else "mood"
-
-_chain = LLMChain(llm=llm_router, prompt=router_prompt, verbose=False)
 
 class _RouterChainAdapter:
     def run(self, user_input: str) -> str:
         if contains_crisis_keywords(user_input):
             return "crisis"
         try:
-            out = _chain.run({"input": user_input})
+            # --- THIS IS ALSO PART OF THE FIX ---
+            # Modern chains are called with `.invoke()` not `.run()`
+            out = _chain.invoke({"input": user_input})
             return _normalize_label(out)
         except Exception as e:
             print(f"Router LLM failed: {e}. Falling back to mood agent.")
