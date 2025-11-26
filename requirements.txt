@@ -14,3 +14,7 @@ pyotp
 sendgrid
 bcrypt
 email-validator
+langchain-core
+langchain-community
+langchain-experimental
+
