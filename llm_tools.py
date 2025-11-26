@@ -8,7 +8,7 @@ from typing import Dict, Any
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
@@ -286,4 +286,5 @@ def tool_send_alert(args: str) -> str:
 # --- LangChain Tool Objects ---
 LOG_MOOD_TOOL = Tool.from_function(func=tool_log_mood, name="log_mood", description="Logs a user's current mood.")
 GET_MOOD_HISTORY_TOOL = Tool.from_function(func=tool_get_mood_history, name="get_mood_history", description="Retrieves the mood history for a user.")
+
 SEND_ALERT_TOOL = Tool.from_function(func=tool_send_alert, name="send_alert", description="Sends a crisis alert.")
