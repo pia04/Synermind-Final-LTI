@@ -10,60 +10,77 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_core.tools import Tool
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableSequence
-
 
 from config import GEMINI_API_KEY, GROQ_API_KEY, SENDGRID_API_KEY, SENDGRID_FROM_EMAIL
 
+
+# ---------------------------------------------------------------------------
+#  LLM PROVIDERS
+# ---------------------------------------------------------------------------
 def get_llm_provider(provider: str = "groq", model_name: str = "llama-3.1-8b-instant", temperature: float = 0.3):
     """
     Returns a LangChain-compatible LLM from a specific provider.
     """
+
     if provider == "groq":
-        api_key = GROQ_API_KEY
-        if not api_key:
-            print("Warning: GROQ_API_KEY not set. Using fallback.")
+        if not GROQ_API_KEY:
+            print("Warning: GROQ_API_KEY not set. Using Dummy LLM.")
         else:
             return ChatGroq(
-                temperature=temperature,
-                groq_api_key=api_key,
+                groq_api_key=GROQ_API_KEY,
                 model_name=model_name,
+                temperature=temperature,
             )
 
     if provider == "gemini":
-        api_key = GEMINI_API_KEY
-        if not api_key:
-            print("Warning: GEMINI_API_KEY not set. Using fallback.")
+        if not GEMINI_API_KEY:
+            print("Warning: GEMINI_API_KEY not set. Using Dummy LLM.")
         else:
             return ChatGoogleGenerativeAI(
                 model=model_name,
                 temperature=temperature,
-                google_api_key=api_key,
+                google_api_key=GEMINI_API_KEY,
             )
 
+    # fallback dummy LLM
     from langchain.schema.messages import AIMessage
+
     class DummyLLM:
         def invoke(self, *args, **kwargs):
-            return AIMessage(content="(No LLM configured — set GEMINI_API_KEY and/or GROQ_API_KEY.)")
+            return AIMessage(content="(No LLM configured — please set API keys.)")
+
     return DummyLLM()
 
+
+# ---------------------------------------------------------------------------
+#  MOOD CLASSIFICATION CHAIN (Updated for LC 1.1+)
+# ---------------------------------------------------------------------------
 def get_mood_extractor_chain():
     """
-    Creates a simple, fast, and reliable chain whose ONLY job is to extract a mood.
-    It uses Gemini for higher accuracy in this critical classification task.
+    Simple chain that extracts a single mood word.
+    Uses new LangChain runnable pattern: prompt | llm
     """
-    llm_classifier = get_llm_provider(provider="gemini", model_name="gemini-2.5-flash", temperature=0.0)
-    
+
+    llm_classifier = get_llm_provider(
+        provider="gemini",
+        model_name="gemini-2.5-flash",
+        temperature=0.0,
+    )
+
     extractor_prompt = PromptTemplate.from_template(
         "Analyze the user's message. Identify the primary mood being expressed. "
         "Respond with a single word from this list: [happy, sad, anxious, angry, content, stressed, neutral]. "
-        "If no clear mood is stated, respond with the single word 'None'. "
-        "Do not add any other words or punctuation.\n\n"
+        "If no clear mood is stated, respond with 'None'.\n\n"
         "User message: {input}"
     )
-    return LLMChain(llm=llm_classifier, prompt=extractor_prompt, verbose=False)
+
+    chain = extractor_prompt | llm_classifier
+    return chain
 
 
+# ---------------------------------------------------------------------------
+#  CRISIS KEYWORD CHECK
+# ---------------------------------------------------------------------------
 CRISIS_KEYWORDS = [
     "suicide", "kill myself", "end my life", "self-harm",
     "hurt myself", "want to die", "i'm going to die"
@@ -74,7 +91,9 @@ def contains_crisis_keywords(text: str) -> bool:
     return any(kw in t for kw in CRISIS_KEYWORDS)
 
 
-# Setup a simple file logger for email operations
+# ---------------------------------------------------------------------------
+#  LOGGING SETUP FOR EMAIL
+# ---------------------------------------------------------------------------
 logger = logging.getLogger("synermind.email")
 if not logger.handlers:
     logger.setLevel(logging.DEBUG)
@@ -85,16 +104,17 @@ if not logger.handlers:
     logger.addHandler(fh)
 
 
-# --- THIS SECTION IS THE FIX ---
-
+# ---------------------------------------------------------------------------
+#  MOOD INSIGHTS + PLOTTING
+# ---------------------------------------------------------------------------
 def get_mood_insights_data(user_id):
     """
-    Fetches all mood log data for a user and returns it as a Pandas DataFrame.
-    Timestamps are converted to IST (Asia/Kolkata) and date/time columns are provided.
-    Accepts username or numeric id (resolve_user_identifier).
+    Fetches mood log data for a user and returns a DataFrame.
+    Converts timestamps to IST.
     """
-    from db_models import get_mood_history, resolve_user_identifier  # local import
+    from db_models import get_mood_history, resolve_user_identifier
     import pytz
+
     try:
         uid = resolve_user_identifier(user_id)
     except Exception:
@@ -108,39 +128,37 @@ def get_mood_insights_data(user_id):
         {"timestamp": r.created_at, "mood": (r.mood.capitalize() if r.mood else None), "intensity": r.intensity}
         for r in rows
     ])
+
     if df.empty:
         return None
 
-    # Ensure timestamp is datetime, localize naive as UTC, convert to IST
     ist = pytz.timezone("Asia/Kolkata")
+
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
+
     def _to_ist(ts):
         if pd.isna(ts):
             return pd.NaT
-        # if tz-naive assume UTC
         if ts.tzinfo is None:
             ts = ts.tz_localize("UTC")
         return ts.tz_convert(ist)
-    df["timestamp_ist"] = df["timestamp"].apply(_to_ist)
 
-    # date and time columns for display
+    df["timestamp_ist"] = df["timestamp"].apply(_to_ist)
     df["date"] = df["timestamp_ist"].dt.date
-    df["time"] = df["timestamp_ist"].dt.strftime("%I:%M %p")  # 12-hour format
+    df["time"] = df["timestamp_ist"].dt.strftime("%I:%M %p")
 
     return df
 
+
 def plot_mood_trend_graph(df: pd.DataFrame):
     """
-    Takes a DataFrame of mood data and returns a clean, readable Plotly line chart
-    of the average mood intensity per day.
+    Creates a plotly line chart of average mood intensity per day.
     """
     if df is None or df.empty:
         return None
 
-    # Aggregate the data to get the average intensity for each date
     agg_df = df.groupby('date')['intensity'].mean().reset_index()
 
-    # Create the figure
     fig = px.line(
         agg_df,
         x='date',
@@ -150,143 +168,163 @@ def plot_mood_trend_graph(df: pd.DataFrame):
         labels={'date': 'Date', 'intensity': 'Average Intensity'}
     )
 
-    # --- FIX: Make the X-axis readable ---
     fig.update_xaxes(
-        dtick="D1",  # Set ticks to appear one per day
-        tickformat="%b %d\n%Y" # Format as "Oct 06\n2025"
+        dtick="D1",
+        tickformat="%b %d\n%Y"
     )
+
     fig.update_layout(
         title_font_size=20,
         xaxis_title=None,
     )
+
     return fig
 
-# --- END OF FIX ---
 
-
+# ---------------------------------------------------------------------------
+#  EMAIL SENDER (SendGrid)
+# ---------------------------------------------------------------------------
 def send_email(to_email: str, subject: str, body: str) -> Dict[str, Any]:
-    """
-    Send email using SendGrid API. This version is more robust and compatible with Python 3.10.
-    """
-    # basic recipient validation: must contain @ and a dot
+
     def _looks_like_email(s: str) -> bool:
-        if not s or not isinstance(s, str):
-            return False
-        return bool(re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", s))
+        return isinstance(s, str) and bool(re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", s))
 
     if not _looks_like_email(to_email):
-        logger.warning("Attempted to send email to non-email recipient: %s", to_email)
-        return {"ok": False, "error": "Recipient does not appear to be an email address."}
+        return {"ok": False, "error": "Invalid email address."}
 
     if SENDGRID_API_KEY and SENDGRID_FROM_EMAIL:
         try:
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail
 
-            # --- THE FIX: Perform the replacement BEFORE the f-string ---
-            # This avoids the backslash syntax error in Python 3.10
             body_with_breaks = body.replace('\n', '<br>')
             html_body = f"<strong>{body_with_breaks}</strong>"
-            
+
             message = Mail(
                 from_email=SENDGRID_FROM_EMAIL,
                 to_emails=to_email,
                 subject=subject,
-                html_content=html_body  # Use the new, clean variable
+                html_content=html_body
             )
-            
+
             sg = SendGridAPIClient(SENDGRID_API_KEY)
             response = sg.send(message)
-            logger.debug("SendGrid response - status: %s, body: %s", getattr(response, 'status_code', None), getattr(response, 'body', None))
 
-            if 200 <= getattr(response, 'status_code', 0) < 300:
-                logger.info("Email sent to %s (subject=%s)", to_email, subject)
+            if 200 <= response.status_code < 300:
                 return {"ok": True}
-            else:
-                err = f"SendGrid API error ({getattr(response, 'status_code', 'unknown')}): {getattr(response, 'body', '')}"
-                logger.error("Failed to send email: %s", err)
-                return {"ok": False, "error": err}
 
-        except ImportError:
-             return {"ok": False, "error": "The 'sendgrid' library is not installed. Please run 'pip install sendgrid'."}
+            return {"ok": False, "error": f"SendGrid error {response.status_code}"}
+
         except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.exception("Exception while sending email to %s: %s", to_email, tb)
-            return {"ok": False, "error": f"A critical error occurred while sending email: {str(e)}"}
-    
-    return {"ok": False, "error": "SendGrid API Key or From Email is not configured in your .env file."}
+            logger.exception("Email failed:", exc_info=True)
+            return {"ok": False, "error": str(e)}
 
+    return {"ok": False, "error": "SendGrid API key or FROM_EMAIL missing."}
+
+
+# ---------------------------------------------------------------------------
+#  LANGCHAIN TOOL FUNCTIONS
+# ---------------------------------------------------------------------------
 def tool_log_mood(args: str) -> str:
-    """
-    Parses a multi-line string from the LLM to log a user's mood.
-    This function is resilient to any kind of newline formatting from the LLM.
-    """
     try:
-        cleaned_args = args.strip().strip("'\"")
-        parts = re.split(r'\\n|\n', cleaned_args)
+        cleaned = args.strip().strip("'\"")
+        parts = re.split(r'\\n|\n', cleaned)
+
         if len(parts) < 2:
-            return f"ERROR: Input must contain user identifier and mood. Received: {parts}"
-        # Allow username or numeric id
+            return f"ERROR: Input requires user id + mood."
+
         from db_models import resolve_user_identifier, add_mood
+
         try:
             user_id = resolve_user_identifier(parts[0].strip())
         except Exception:
-            return f"ERROR: Could not resolve user identifier: {parts[0].strip()}"
+            return f"ERROR: Unknown user: {parts[0].strip()}"
+
         mood = parts[1].strip()
-        intensity = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else 5
+        intensity = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 5
         note = parts[3].strip() if len(parts) > 3 else None
-        ml = add_mood(user_id=user_id, mood=mood, intensity=intensity, note=note)
-        return f"OK: Mood '{mood}' was successfully logged for user {user_id}."
+
+        add_mood(user_id=user_id, mood=mood, intensity=intensity, note=note)
+        return f"OK: Mood '{mood}' logged."
+
     except Exception as e:
-        return f"ERROR logging mood: {str(e)}. Input received: {args}"
+        return f"ERROR: {str(e)}"
+
 
 def tool_get_mood_history(args: str) -> str:
-    from db_models import get_mood_history, resolve_user_identifier
     try:
+        from db_models import get_mood_history, resolve_user_identifier
+
         uid = resolve_user_identifier(args.strip())
         rows = get_mood_history(uid)
-        lines = [f"On {r.created_at.strftime('%Y-%m-%d')}, mood was '{r.mood}' (intensity: {r.intensity})" for r in rows]
-        return "\n".join(lines) if lines else "No mood history found for this user."
+
+        if not rows:
+            return "No mood history."
+
+        return "\n".join(
+            f"On {r.created_at.strftime('%Y-%m-%d')}, mood was '{r.mood}' (intensity {r.intensity})"
+            for r in rows
+        )
+
     except Exception as e:
-        return f"ERROR getting mood history: {str(e)}"
+        return f"ERROR: {str(e)}"
+
 
 def tool_send_alert(args: str) -> str:
-    from db_models import create_alert, SessionLocal, User, resolve_user_identifier
     try:
+        from db_models import create_alert, SessionLocal, User, resolve_user_identifier
+
         parts = args.split("\n", 2)
         uid = resolve_user_identifier(parts[0].strip())
+
         subject = parts[1]
         message = parts[2] if len(parts) > 2 else ""
-        a = create_alert(user_id=uid, alert_type=subject, message=message)
+
+        alert = create_alert(user_id=uid, alert_type=subject, message=message)
+
         db = SessionLocal()
         user = db.query(User).filter(User.id == uid).first()
         db.close()
+
         to_email = None
+
         if user:
-            # Prefer emergency_contact if it looks like an email, otherwise fallback to the user's email
-            ec = user.emergency_contact.strip() if user.emergency_contact else None
-            ue = user.email.strip() if user.email else None
-            # re-use send_email's internal validation by checking basic pattern here
-            if ec and re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", ec):
-                to_email = ec
-            elif ue and re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", ue):
-                to_email = ue
+            if user.emergency_contact and re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", user.emergency_contact):
+                to_email = user.emergency_contact
+            elif user.email and re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", user.email):
+                to_email = user.email
 
         if not to_email:
-            logger.warning("Alert saved (id=%s) but no valid recipient email found for user id %s", a.id, uid)
-            return f"ALERT saved (id={a.id}) but no valid recipient email found for this user."
+            return f"ALERT saved (id={alert.id}) but no valid recipient email."
 
-        res = send_email(to_email, f"Synermind Alert: {subject}", f"This is an alert regarding user: {user.username}\n\n{message}")
+        res = send_email(to_email, f"Synermind Alert: {subject}", f"User: {user.username}\n\n{message}")
+
         if res.get("ok"):
-            return f"ALERT sent successfully to the user's emergency contact."
-        return f"Alert was saved, but the email failed to send: {res.get('error')}"
+            return "ALERT sent successfully."
+
+        return f"Alert saved but email failed: {res.get('error')}"
+
     except Exception as e:
-        return f"ERROR sending alert: {str(e)}"
+        return f"ERROR: {str(e)}"
 
-# --- LangChain Tool Objects ---
-LOG_MOOD_TOOL = Tool.from_function(func=tool_log_mood, name="log_mood", description="Logs a user's current mood.")
-GET_MOOD_HISTORY_TOOL = Tool.from_function(func=tool_get_mood_history, name="get_mood_history", description="Retrieves the mood history for a user.")
 
-SEND_ALERT_TOOL = Tool.from_function(func=tool_send_alert, name="send_alert", description="Sends a crisis alert.")
+# ---------------------------------------------------------------------------
+#  TOOL OBJECTS (correct for LC 1.1)
+# ---------------------------------------------------------------------------
+LOG_MOOD_TOOL = Tool.from_function(
+    func=tool_log_mood,
+    name="log_mood",
+    description="Logs a user's current mood."
+)
 
+GET_MOOD_HISTORY_TOOL = Tool.from_function(
+    func=tool_get_mood_history,
+    name="get_mood_history",
+    description="Retrieves mood history for a user."
+)
+
+SEND_ALERT_TOOL = Tool.from_function(
+    func=tool_send_alert,
+    name="send_alert",
+    description="Sends a crisis alert."
+)
