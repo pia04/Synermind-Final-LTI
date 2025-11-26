@@ -1,31 +1,32 @@
-# agents.py — Updated for LangChain 1.x+
-# Fully replaces your old file.
+# agents.py — FINAL WORKING VERSION (LangChain 1.x compliant)
 
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableSequence
-from langchain_community.memory import ConversationBufferWindowMemory
+from langchain.memory import ConversationBufferMemory
 from langchain.agents import AgentExecutor, create_react_agent, create_openai_functions_agent
 
 from llm_tools import get_llm_provider, GET_MOOD_HISTORY_TOOL, SEND_ALERT_TOOL
 
 
 # ---------------------------------------------------------------------
-#  Conversation Agent (replacement for ConversationChain)
+#  Conversation Agent (Replacement for old ConversationChain)
 # ---------------------------------------------------------------------
 def build_conversation_agent(llm, template_text):
-    prompt = PromptTemplate(input_variables=["history", "input"], template=template_text)
 
-    memory = ConversationBufferWindowMemory(
-        k=10,
-        memory_key="history",
-        return_messages=True
+    prompt = PromptTemplate(
+        input_variables=["history", "input"],
+        template=template_text
     )
 
-    # New LC API: message-based agent
+    memory = ConversationBufferMemory(
+        memory_key="history",
+        return_messages=True,
+        k=10
+    )
+
     agent = create_openai_functions_agent(
         llm=llm,
         prompt=prompt,
-        tools=[],
+        tools=[]
     )
 
     return AgentExecutor(
@@ -37,24 +38,25 @@ def build_conversation_agent(llm, template_text):
 
 
 # ---------------------------------------------------------------------
-#  Routine Agent (ReAct-style)
+# Routine Agent (ReAct-style)
 # ---------------------------------------------------------------------
 def build_routine_agent(llm):
 
-    ROUTINE_AGENT_PREFIX = """You are a supportive and logical Wellness Coach. Your primary job is to provide routine suggestions using the user's most recent input by default.
-1. If the user asks for a routine using their recent input, generate suggestions immediately — DO NOT call any tools.
-2. Only if the user explicitly requests suggestions "based on my mood history" you MUST call the `get_mood_history` tool FIRST.
-3. If username is missing, ask for it.
-4. After the tool returns mood history, tailor the routine and reference moods/dates.
-5. End with one guiding question in *italics*.
+    ROUTINE_AGENT_PREFIX = """You are a supportive and logical Wellness Coach.
+Your rules:
+1. If the user asks for a routine normally, DO NOT call tools.
+2. If user asks for mood-history-based routine, call get_mood_history FIRST.
+3. If username missing, ask for it.
+4. Reference moods/dates in final answer.
+5. End with one question in *italics*.
 
-You have access to the following tools:
+Tools available below:
 """
 
-    memory = ConversationBufferWindowMemory(
-        k=6,
+    memory = ConversationBufferMemory(
         memory_key="chat_history",
-        return_messages=True
+        return_messages=True,
+        k=6
     )
 
     agent = create_react_agent(
@@ -73,23 +75,22 @@ You have access to the following tools:
 
 
 # ---------------------------------------------------------------------
-#  Crisis Agent
+# Crisis Agent
 # ---------------------------------------------------------------------
 def build_crisis_agent(llm):
 
     CRISIS_SYSTEM = (
-        "You are a Crisis Response Agent. Your ONLY job is to protect user safety.\n"
-        "Your FIRST action MUST be calling `send_alert`.\n"
-        "Use Action Input as: [User ID]\\n[Subject]\\n[Message].\n"
-        "Subject: CRISIS ALERT: User expresses intent for self-harm.\n"
-        "Message: copy user's exact message.\n"
-        "After sending the alert, respond supportively with a real-world resource.\n"
+        "You are a Crisis Response Agent. Your FIRST action must be calling `send_alert`.\n"
+        "Input format: [User ID]\\n[Subject]\\n[Message]\n"
+        "Subject = CRISIS ALERT: User expresses intent for self-harm.\n"
+        "Message = copy user's exact message.\n"
+        "After tool call, give a calming message and real hotline.\n"
     )
 
-    memory = ConversationBufferWindowMemory(
-        k=8,
+    memory = ConversationBufferMemory(
         memory_key="chat_history",
-        return_messages=True
+        return_messages=True,
+        k=8
     )
 
     agent = create_react_agent(
@@ -103,15 +104,16 @@ def build_crisis_agent(llm):
         tools=[SEND_ALERT_TOOL],
         memory=memory,
         verbose=False,
-        handle_parsing_errors=True,
-        max_iterations=10
+        max_iterations=10,
+        handle_parsing_errors=True
     )
 
 
 # ---------------------------------------------------------------------
-#  Get all agents
+# Export all agents
 # ---------------------------------------------------------------------
 def get_agents():
+
     llm_conversational = get_llm_provider(
         provider="groq",
         model_name="llama-3.1-8b-instant",
@@ -119,34 +121,36 @@ def get_agents():
     )
 
     # Mood Agent
-    mood_template = """You are 'Mindful', warm, empathetic, supportive.
-1. Validate user feelings.
-2. End with one open-ended question in *italics*.
+    mood_prompt = """You are 'Mindful', warm and empathetic.
+1. Validate feelings briefly.
+2. End with an open-ended question in *italics*.
+
 Conversation:
 {history}
 Human: {input}
 AI:"""
-    mood_agent = build_conversation_agent(llm_conversational, mood_template)
+    mood = build_conversation_agent(llm_conversational, mood_prompt)
 
     # Therapy Agent
-    therapy_template = """You are a patient CBT-based guide.
-1. Help user explore thoughts through questions.
-2. End with one guiding question in *italics*.
+    therapy_prompt = """You are a gentle CBT guide.
+1. Ask reflective questions.
+2. End with one question in *italics*.
+
 Conversation:
 {history}
 Human: {input}
 AI:"""
-    therapy_agent = build_conversation_agent(llm_conversational, therapy_template)
+    therapy = build_conversation_agent(llm_conversational, therapy_prompt)
 
-    # Routine Agent
-    routine_agent = build_routine_agent(llm_conversational)
+    # Routine
+    routine = build_routine_agent(llm_conversational)
 
-    # Crisis Agent
-    crisis_agent = build_crisis_agent(llm_conversational)
+    # Crisis
+    crisis = build_crisis_agent(llm_conversational)
 
     return {
-        "mood": mood_agent,
-        "therapy": therapy_agent,
-        "routine": routine_agent,
-        "crisis": crisis_agent
+        "mood": mood,
+        "therapy": therapy,
+        "routine": routine,
+        "crisis": crisis
     }
