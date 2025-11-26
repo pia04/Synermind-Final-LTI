@@ -10,7 +10,7 @@ from llm_tools import get_llm_provider, GET_MOOD_HISTORY_TOOL, SEND_ALERT_TOOL
 
 
 # ---------------------------------------------------------------------
-#  Conversation Chain (replacement for ConversationChain)
+#  Conversation Agent (replacement for ConversationChain)
 # ---------------------------------------------------------------------
 def build_conversation_agent(llm, template_text):
     prompt = PromptTemplate(input_variables=["history", "input"], template=template_text)
